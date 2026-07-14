@@ -150,6 +150,10 @@
   </div>
 
   <div class="card" id="setup">
+    <div id="loginRow" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;padding-bottom:1rem;border-bottom:2px dashed var(--border,#ddd);">
+      <span id="loginStatus" style="font-size:.85rem;color:var(--muted);">host not connected</span>
+      <button class="secondary" id="loginBtn" style="width:auto;padding:.5rem .9rem;font-size:.85rem;">connect spotify</button>
+    </div>
     <label for="link">spotify playlist link</label>
     <input id="link" type="text" placeholder="https://open.spotify.com/playlist/...">
     <label for="players">players (comma separated, optional)</label>
@@ -183,14 +187,140 @@ const linkInput=$('link'), playersInput=$('players');
 const startBtn=$('startBtn'), playBtn=$('playBtn'), guessBtn=$('guessBtn'), skipBtn=$('skipBtn');
 const disc=$('disc'), hint=$('hint'), tries=$('tries'), result=$('result'), guess=$('guess');
 const roundEl=$('round'), totalRoundsEl=$('totalRounds'), turnLabel=$('turnLabel'), scoreboard=$('scoreboard');
+const loginBtn=$('loginBtn'), loginStatus=$('loginStatus');
 
 const TOTAL_ROUNDS = 5;
+const CLIENT_ID = '71ae0c77d2a14968bf93940bfc34b0c0';
+const REDIRECT_URI = 'https://music-fun-thing.vercel.app/api/done';
+const SCOPES = 'playlist-read-private playlist-read-collaborative user-library-read';
+
+function base64url(buf){
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+async function pkceChallenge(verifier){
+  const data = new TextEncoder().encode(verifier);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return base64url(digest);
+}
+function randomString(len){
+  const arr = new Uint8Array(len);
+  crypto.getRandomValues(arr);
+  return base64url(arr).slice(0,len);
+}
+
+async function startLogin(){
+  const verifier = randomString(64);
+  sessionStorage.setItem('pkce_verifier', verifier);
+  const challenge = await pkceChallenge(verifier);
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: REDIRECT_URI,
+    scope: SCOPES,
+    code_challenge_method: 'S256',
+    code_challenge: challenge
+  });
+  window.location = 'https://accounts.spotify.com/authorize?' + params.toString();
+}
+
+async function exchangeToken(code){
+  const verifier = sessionStorage.getItem('pkce_verifier');
+  const body = new URLSearchParams({
+    client_id: CLIENT_ID,
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: REDIRECT_URI,
+    code_verifier: verifier
+  });
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: {'Content-Type':'application/x-www-form-urlencoded'},
+    body
+  });
+  if(!res.ok) throw new Error('token exchange failed');
+  return res.json();
+}
+
+let accessToken = sessionStorage.getItem('spotify_token') || null;
+let playlistTracks = [];
+
+if(accessToken){
+  loginStatus.textContent = 'host connected';
+  loginBtn.textContent = 'reconnect';
+}
+
+loginBtn.onclick = startLogin;
+
+(async function handleRedirect(){
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  if(code){
+    window.history.replaceState({}, document.title, window.location.pathname === '/api/done' ? '/' : window.location.pathname);
+    try{
+      const tokenData = await exchangeToken(code);
+      accessToken = tokenData.access_token;
+      sessionStorage.setItem('spotify_token', accessToken);
+      loginStatus.textContent = 'host connected';
+      loginBtn.textContent = 'reconnect';
+    }catch(e){
+      loginStatus.textContent = 'login failed — try again';
+    }
+  }
+})();
+
+function extractPlaylistId(url){
+  const match = url.match(/playlist\/([a-zA-Z0-9]+)/);
+  return match ? match[1] : null;
+}
+
+async function fetchPlaylistTracks(playlistId){
+  const headers = {Authorization: 'Bearer '+accessToken};
+  let items = [];
+  let url = 'https://api.spotify.com/v1/playlists/'+playlistId+'/tracks?limit=50&fields=items(track(name,artists(name),preview_url)),next';
+  while(url && items.length < 100){
+    const res = await fetch(url, {headers});
+    if(!res.ok) throw new Error('could not load playlist — is it public, or does the host have access?');
+    const data = await res.json();
+    items = items.concat(data.items.filter(i => i.track));
+    url = data.next;
+  }
+  return items.map(i => ({
+    name: i.track.name,
+    artist: i.track.artists.map(a=>a.name).join(', '),
+    preview: i.track.preview_url
+  }));
+}
 let players = ['You'];
 let scores = {};
 let round = 1;
 let playerIdx = 0;
 let triesLeft = 3;
 let clipSeconds = 1;
+let currentTrack = null;
+let usedIndexes = new Set();
+let audioEl = new Audio();
+
+function pickTrack(){
+  if(playlistTracks.length === 0) return null;
+  if(usedIndexes.size >= playlistTracks.length) usedIndexes.clear();
+  let idx;
+  do{ idx = Math.floor(Math.random()*playlistTracks.length); } while(usedIndexes.has(idx));
+  usedIndexes.add(idx);
+  return playlistTracks[idx];
+}
+
+function playClip(seconds){
+  if(currentTrack && currentTrack.preview){
+    audioEl.src = currentTrack.preview;
+    audioEl.currentTime = Math.floor(Math.random()*20);
+    audioEl.play();
+    disc.classList.add('spin');
+    setTimeout(()=>{ audioEl.pause(); disc.classList.remove('spin'); }, seconds*1000);
+  } else {
+    beep(seconds);
+  }
+}
 
 function beep(seconds){
   const ctx = new (window.AudioContext||window.webkitAudioContext)();
@@ -221,11 +351,38 @@ function newRound(){
   hint.innerHTML = '1 second clip · <span id="tries">'+triesLeft+'</span> extra listens left';
   roundEl.textContent = round;
   turnLabel.textContent = players[playerIdx] + "'s turn";
+  currentTrack = pickTrack();
 }
 
-startBtn.onclick = () => {
+startBtn.onclick = async () => {
   if(!linkInput.value.trim()){
     linkInput.style.borderColor = '#e24b4a';
+    return;
+  }
+  if(!accessToken){
+    result.textContent = '';
+    loginStatus.textContent = 'connect spotify first';
+    return;
+  }
+  const playlistId = extractPlaylistId(linkInput.value.trim());
+  if(!playlistId){
+    linkInput.style.borderColor = '#e24b4a';
+    return;
+  }
+  startBtn.disabled = true;
+  startBtn.textContent = 'loading playlist…';
+  try{
+    playlistTracks = await fetchPlaylistTracks(playlistId);
+  }catch(e){
+    startBtn.disabled = false;
+    startBtn.textContent = 'start the game';
+    loginStatus.textContent = e.message;
+    return;
+  }
+  startBtn.disabled = false;
+  startBtn.textContent = 'start the game';
+  if(playlistTracks.length === 0){
+    loginStatus.textContent = 'no tracks found in that playlist';
     return;
   }
   const raw = playersInput.value.trim();
@@ -239,7 +396,7 @@ startBtn.onclick = () => {
   newRound();
 };
 
-playBtn.onclick = () => beep(clipSeconds);
+playBtn.onclick = () => playClip(clipSeconds);
 
 function advance(){
   playerIdx = (playerIdx+1) % players.length;
@@ -252,15 +409,23 @@ function advance(){
   newRound();
 }
 
+function checkGuess(text){
+  if(!currentTrack) return false;
+  const g = text.toLowerCase();
+  return g.includes(currentTrack.name.toLowerCase()) ||
+         currentTrack.name.toLowerCase().includes(g) ||
+         g.includes(currentTrack.artist.toLowerCase());
+}
+
 guessBtn.onclick = () => {
   if(!guess.value.trim()) return;
-  const correct = Math.random() < 0.5;
+  const correct = checkGuess(guess.value.trim());
   if(correct){
     const bonus = triesLeft + 1;
     scores[players[playerIdx]] = (scores[players[playerIdx]]||0) + bonus;
-    result.innerHTML = '<span class="result-ok">nice! +'+bonus+' points</span>';
+    result.innerHTML = '<span class="result-ok">nice! it was '+currentTrack.name+' — '+currentTrack.artist+' (+'+bonus+' points)</span>';
     renderScoreboard();
-    setTimeout(advance, 1200);
+    setTimeout(advance, 1600);
     return;
   }
   if(triesLeft > 0){
@@ -269,14 +434,14 @@ guessBtn.onclick = () => {
     hint.innerHTML = clipSeconds+' second clip · <span id="tries">'+triesLeft+'</span> extra listens left';
     result.innerHTML = '<span class="result-hint">not it — try again</span>';
   } else {
-    result.innerHTML = '<span class="result-hint">out of listens — next player</span>';
-    setTimeout(advance, 1200);
+    result.innerHTML = '<span class="result-hint">out of listens — it was '+currentTrack.name+' — '+currentTrack.artist+'</span>';
+    setTimeout(advance, 1800);
   }
 };
 
 skipBtn.onclick = () => {
-  result.innerHTML = '<span class="result-hint">skipped</span>';
-  setTimeout(advance, 800);
+  result.innerHTML = '<span class="result-hint">skipped — it was '+(currentTrack?currentTrack.name:'?')+'</span>';
+  setTimeout(advance, 1000);
 };
 </script>
 </body>
