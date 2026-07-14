@@ -180,6 +180,7 @@
   <p class="footnote" id="footnote">running in demo mode — clips are placeholder tones until this is connected to Spotify</p>
 </div>
 
+<script src="https://sdk.scdn.co/spotify-player.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const setup=$('setup'), game=$('game');
@@ -192,7 +193,7 @@ const loginBtn=$('loginBtn'), loginStatus=$('loginStatus');
 const TOTAL_ROUNDS = 5;
 const CLIENT_ID = '748e3e8594814b78a534f113a72a338d';
 const REDIRECT_URI = 'https://music-fun-thing.vercel.app/api/done';
-const SCOPES = 'playlist-read-private playlist-read-collaborative user-library-read';
+const SCOPES = 'playlist-read-private playlist-read-collaborative user-library-read streaming user-read-email user-read-private user-modify-playback-state';
 
 function base64url(buf){
   return btoa(String.fromCharCode(...new Uint8Array(buf)))
@@ -248,6 +249,7 @@ let playlistTracks = [];
 if(accessToken){
   loginStatus.textContent = 'host connected';
   loginBtn.textContent = 'reconnect';
+  initSdkPlayer();
 }
 
 loginBtn.onclick = startLogin;
@@ -263,6 +265,7 @@ loginBtn.onclick = startLogin;
       sessionStorage.setItem('spotify_token', accessToken);
       loginStatus.textContent = 'host connected';
       loginBtn.textContent = 'reconnect';
+      initSdkPlayer();
     }catch(e){
       loginStatus.textContent = 'login failed — try again';
     }
@@ -277,7 +280,7 @@ function extractPlaylistId(url){
 async function fetchPlaylistTracks(playlistId){
   const headers = {Authorization: 'Bearer '+accessToken};
   let items = [];
-  let url = 'https://api.spotify.com/v1/playlists/'+playlistId+'/tracks?limit=50&fields=items(track(name,artists(name),preview_url)),next';
+  let url = 'https://api.spotify.com/v1/playlists/'+playlistId+'/tracks?limit=50&fields=items(track(id,uri,name,artists(name),preview_url,duration_ms)),next';
   while(url && items.length < 100){
     const res = await fetch(url, {headers});
     if(!res.ok) throw new Error('could not load playlist — is it public, or does the host have access?');
@@ -288,7 +291,9 @@ async function fetchPlaylistTracks(playlistId){
   return items.map(i => ({
     name: i.track.name,
     artist: i.track.artists.map(a=>a.name).join(', '),
-    preview: i.track.preview_url
+    preview: i.track.preview_url,
+    uri: i.track.uri,
+    duration: i.track.duration_ms
   }));
 }
 let players = ['You'];
@@ -301,6 +306,27 @@ let currentTrack = null;
 let usedIndexes = new Set();
 let audioEl = new Audio();
 
+let sdkPlayer = null;
+let sdkDeviceId = null;
+let sdkReady = false;
+
+function initSdkPlayer(){
+  if(!accessToken || sdkPlayer) return;
+  sdkPlayer = new Spotify.Player({
+    name: 'Blindtest party game',
+    getOAuthToken: cb => cb(accessToken),
+    volume: 0.8
+  });
+  sdkPlayer.addListener('ready', ({device_id}) => {
+    sdkDeviceId = device_id;
+    sdkReady = true;
+  });
+  sdkPlayer.addListener('not_ready', () => { sdkReady = false; });
+  sdkPlayer.connect();
+}
+
+window.onSpotifyWebPlaybackSDKReady = () => { initSdkPlayer(); };
+
 function pickTrack(){
   if(playlistTracks.length === 0) return null;
   if(usedIndexes.size >= playlistTracks.length) usedIndexes.clear();
@@ -310,8 +336,27 @@ function pickTrack(){
   return playlistTracks[idx];
 }
 
+async function playViaSDK(seconds){
+  const maxStart = Math.max(0, (currentTrack.duration||180000) - seconds*1000 - 5000);
+  const startMs = Math.floor(Math.random()*maxStart);
+  await fetch('https://api.spotify.com/v1/me/player/play?device_id='+sdkDeviceId, {
+    method:'PUT',
+    headers:{Authorization:'Bearer '+accessToken, 'Content-Type':'application/json'},
+    body: JSON.stringify({uris:[currentTrack.uri], position_ms:startMs})
+  });
+  disc.classList.add('spin');
+  setTimeout(async ()=>{
+    await fetch('https://api.spotify.com/v1/me/player/pause?device_id='+sdkDeviceId, {
+      method:'PUT', headers:{Authorization:'Bearer '+accessToken}
+    });
+    disc.classList.remove('spin');
+  }, seconds*1000);
+}
+
 function playClip(seconds){
-  if(currentTrack && currentTrack.preview){
+  if(currentTrack && currentTrack.uri && sdkReady && sdkDeviceId){
+    playViaSDK(seconds);
+  } else if(currentTrack && currentTrack.preview){
     audioEl.src = currentTrack.preview;
     audioEl.currentTime = Math.floor(Math.random()*20);
     audioEl.play();
