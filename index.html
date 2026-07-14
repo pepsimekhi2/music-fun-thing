@@ -153,6 +153,21 @@
   .status-disconnected {
     color: #e24b4a;
   }
+  
+  .config-warning {
+    background: #fff3cd;
+    border: 2px solid #ffc107;
+    border-radius: 12px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    font-size: 0.85rem;
+  }
+  .config-warning code {
+    background: #f8f9fa;
+    padding: 0.2rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+  }
 </style>
 </head>
 <body>
@@ -163,6 +178,12 @@
   </div>
 
   <div class="card" id="setup">
+    <div id="configWarning" class="config-warning" style="display:none;">
+      ⚠️ <strong>Configuration Required:</strong><br>
+      Add this redirect URI to your Spotify App:<br>
+      <code id="redirectUriDisplay"></code>
+    </div>
+    
     <div id="loginRow" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;padding-bottom:1rem;border-bottom:2px dashed #ddd;">
       <span id="loginStatus" class="status-disconnected">⚠️ host not connected</span>
       <button class="secondary" id="loginBtn" style="width:auto;padding:.5rem .9rem;font-size:.85rem;">🔗 connect spotify</button>
@@ -196,9 +217,24 @@
 <script>
 // ============ CONFIGURATION ============
 const CLIENT_ID = '748e3e8594814b78a534f113a72a338d';
-// IMPORTANT: This MUST match exactly what's in your Spotify App Dashboard
+
+// IMPORTANT: This MUST match EXACTLY what's in your Spotify App Dashboard
+// For local development, add: http://localhost:3000 and http://localhost:3000/callback
+// For production, add: https://music-fun-thing.vercel.app and https://music-fun-thing.vercel.app/callback
 const REDIRECT_URI = window.location.origin + window.location.pathname;
-const SCOPES = 'playlist-read-private playlist-read-collaborative user-library-read streaming user-read-email user-read-private user-modify-playback-state';
+
+const SCOPES = [
+  'playlist-read-private',
+  'playlist-read-collaborative',
+  'user-read-private',
+  'user-read-email',
+  'streaming',
+  'user-modify-playback-state',
+  'user-read-playback-state'
+].join(' ');
+
+// Show the redirect URI for configuration
+document.getElementById('redirectUriDisplay').textContent = REDIRECT_URI;
 
 // ============ DOM ELEMENTS ============
 const $ = id => document.getElementById(id);
@@ -208,6 +244,7 @@ const startBtn=$('startBtn'), playBtn=$('playBtn'), guessBtn=$('guessBtn'), skip
 const disc=$('disc'), hint=$('hint'), tries=$('tries'), result=$('result'), guess=$('guess');
 const roundEl=$('round'), totalRoundsEl=$('totalRounds'), turnLabel=$('turnLabel'), scoreboard=$('scoreboard');
 const loginBtn=$('loginBtn'), loginStatus=$('loginStatus');
+const configWarning=$('configWarning');
 
 // ============ STATE ============
 let accessToken = null;
@@ -279,7 +316,8 @@ async function startLogin() {
     redirect_uri: REDIRECT_URI,
     scope: SCOPES,
     code_challenge_method: 'S256',
-    code_challenge: codeChallenge
+    code_challenge: codeChallenge,
+    show_dialog: true
   });
   
   window.location.href = 'https://accounts.spotify.com/authorize?' + params.toString();
@@ -365,6 +403,7 @@ async function refreshAccessToken() {
   if (error) {
     console.error('Auth error:', error);
     updateLoginStatus(false);
+    loginStatus.textContent = '❌ Auth error: ' + error;
     return;
   }
   
@@ -383,7 +422,8 @@ async function refreshAccessToken() {
       initSdkPlayer();
       
       // Clean up the URL
-      window.history.replaceState({}, document.title, window.location.pathname);
+      const cleanUrl = window.location.origin + window.location.pathname;
+      window.history.replaceState({}, document.title, cleanUrl);
     } catch (error) {
       console.error('Token exchange failed:', error);
       updateLoginStatus(false);
@@ -433,7 +473,8 @@ function initSdkPlayer() {
     sdkPlayer.addListener('ready', ({device_id}) => {
       sdkDeviceId = device_id;
       sdkReady = true;
-      console.log('✅ Spotify player ready');
+      console.log('✅ Spotify player ready with device ID:', device_id);
+      loginStatus.textContent = '✅ connected & player ready';
     });
     
     sdkPlayer.addListener('not_ready', () => {
@@ -443,6 +484,12 @@ function initSdkPlayer() {
     
     sdkPlayer.addListener('initialization_error', (e) => {
       console.error('Spotify init error:', e);
+    });
+    
+    sdkPlayer.addListener('authentication_error', (e) => {
+      console.error('Spotify auth error:', e);
+      // Try to refresh token
+      refreshAccessToken();
     });
     
     sdkPlayer.connect();
@@ -500,7 +547,7 @@ function extractPlaylistId(url) {
 
 async function fetchPlaylistTracks(playlistId) {
   let items = [];
-  let url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50&fields=items(track(id,uri,name,artists(name),preview_url,duration_ms)),next`;
+  let url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50`;
   
   try {
     while (url && items.length < 100) {
@@ -682,7 +729,6 @@ function checkGuess(text) {
   // Check if guess matches track name or artist
   return g.includes(name) || name.includes(g) || 
          g.includes(artist) || artist.includes(g) ||
-         // Check if guess contains key words from both name and artist
          (g.split(' ').some(word => name.includes(word) && artist.includes(word)));
 }
 
@@ -797,9 +843,17 @@ skipBtn.onclick = () => {
 
 // ============ INIT ============
 console.log('🎵 Blindtest game loaded!');
-console.log('📋 Make sure your redirect URI is set to:', REDIRECT_URI);
+console.log('📋 Your redirect URI is:', REDIRECT_URI);
+console.log('📋 Add this to your Spotify App Dashboard under "Redirect URIs"');
 console.log('🔑 Client ID:', CLIENT_ID);
-console.log('📌 This uses Authorization Code Flow with PKCE');
+
+// Show warning if redirect URI might not be configured
+setTimeout(() => {
+  // Check if we have a token but are on the main page (not callback)
+  if (!accessToken && !window.location.search.includes('code')) {
+    configWarning.style.display = 'block';
+  }
+}, 1000);
 </script>
 </body>
 </html>
