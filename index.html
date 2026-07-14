@@ -79,6 +79,7 @@
   button:active{transform:scale(0.97);}
   button.secondary{background:var(--card);color:var(--ink);}
   button.accent{background:var(--accent);color:#fff;}
+  button:disabled{opacity:0.5;cursor:not-allowed;}
 
   .row{display:flex;gap:.6rem;}
   .row button{width:auto;flex:1;}
@@ -140,9 +141,20 @@
     color:var(--muted);
     margin-top:1.25rem;
   }
+  
+  #loginStatus {
+    font-size:.85rem;
+    color:var(--muted);
+  }
+  
+  .status-connected {
+    color: #0f6e56;
+  }
+  .status-disconnected {
+    color: #e24b4a;
+  }
 </style>
 </head>
-
 <body>
 <div class="stage">
   <div class="brand">
@@ -151,15 +163,15 @@
   </div>
 
   <div class="card" id="setup">
-    <div id="loginRow" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;padding-bottom:1rem;border-bottom:2px dashed var(--border,#ddd);">
-      <span id="loginStatus" style="font-size:.85rem;color:var(--muted);">host not connected</span>
-      <button class="secondary" id="loginBtn" style="width:auto;padding:.5rem .9rem;font-size:.85rem;">connect spotify</button>
+    <div id="loginRow" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;padding-bottom:1rem;border-bottom:2px dashed #ddd;">
+      <span id="loginStatus" class="status-disconnected">⚠️ host not connected</span>
+      <button class="secondary" id="loginBtn" style="width:auto;padding:.5rem .9rem;font-size:.85rem;">🔗 connect spotify</button>
     </div>
     <label for="link">spotify playlist link</label>
     <input id="link" type="text" placeholder="https://open.spotify.com/playlist/...">
     <label for="players">players (comma separated, optional)</label>
     <input id="players" type="text" placeholder="Sam, Jess, Priya">
-    <button class="accent" id="startBtn">start the game</button>
+    <button class="accent" id="startBtn">🚀 start the game</button>
   </div>
 
   <div class="card" id="game">
@@ -178,10 +190,17 @@
     <div class="score" id="scoreboard"></div>
   </div>
 
-  <p class="footnote" id="footnote">running in demo mode — clips are placeholder tones until this is connected to Spotify</p>
+  <p class="footnote" id="footnote">🎵 connected to Spotify — premium users get full song clips</p>
 </div>
 
 <script>
+// ============ CONFIGURATION ============
+const CLIENT_ID = '748e3e8594814b78a534f113a72a338d';
+// IMPORTANT: This MUST match exactly what's in your Spotify App Dashboard
+const REDIRECT_URI = window.location.origin + window.location.pathname;
+const SCOPES = 'playlist-read-private playlist-read-collaborative user-library-read streaming user-read-email user-read-private user-modify-playback-state';
+
+// ============ DOM ELEMENTS ============
 const $ = id => document.getElementById(id);
 const setup=$('setup'), game=$('game');
 const linkInput=$('link'), playersInput=$('players');
@@ -190,110 +209,12 @@ const disc=$('disc'), hint=$('hint'), tries=$('tries'), result=$('result'), gues
 const roundEl=$('round'), totalRoundsEl=$('totalRounds'), turnLabel=$('turnLabel'), scoreboard=$('scoreboard');
 const loginBtn=$('loginBtn'), loginStatus=$('loginStatus');
 
-const TOTAL_ROUNDS = 5;
-const CLIENT_ID = '748e3e8594814b78a534f113a72a338d';
-const REDIRECT_URI = 'https://music-fun-thing.vercel.app/api/done';
-const SCOPES = 'playlist-read-private playlist-read-collaborative user-library-read';
-
-function base64url(buf){
-  return btoa(String.fromCharCode(...new Uint8Array(buf)))
-    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-}
-async function pkceChallenge(verifier){
-  const data = new TextEncoder().encode(verifier);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  return base64url(digest);
-}
-function randomString(len){
-  const arr = new Uint8Array(len);
-  crypto.getRandomValues(arr);
-  return base64url(arr).slice(0,len);
-}
-
-async function startLogin(){
-  const verifier = randomString(64);
-  sessionStorage.setItem('pkce_verifier', verifier);
-  const challenge = await pkceChallenge(verifier);
-  const params = new URLSearchParams({
-    client_id: CLIENT_ID,
-    response_type: 'code',
-    redirect_uri: REDIRECT_URI,
-    scope: SCOPES,
-    code_challenge_method: 'S256',
-    code_challenge: challenge
-  });
-  window.location = 'https://accounts.spotify.com/authorize?' + params.toString();
-}
-
-async function exchangeToken(code){
-  const verifier = sessionStorage.getItem('pkce_verifier');
-  const body = new URLSearchParams({
-    client_id: CLIENT_ID,
-    grant_type: 'authorization_code',
-    code,
-    redirect_uri: REDIRECT_URI,
-    code_verifier: verifier
-  });
-  const res = await fetch('https://accounts.spotify.com/api/token', {
-    method: 'POST',
-    headers: {'Content-Type':'application/x-www-form-urlencoded'},
-    body
-  });
-  if(!res.ok) throw new Error('token exchange failed');
-  return res.json();
-}
-
+// ============ STATE ============
 let accessToken = sessionStorage.getItem('spotify_token') || null;
 let playlistTracks = [];
-
-if(accessToken){
-  loginStatus.textContent = 'host connected';
-  loginBtn.textContent = 'reconnect';
-}
-
-loginBtn.onclick = startLogin;
-
-(async function handleRedirect(){
-  const params = new URLSearchParams(window.location.search);
-  const code = params.get('code');
-  if(code){
-    window.history.replaceState({}, document.title, window.location.pathname === '/api/done' ? '/' : window.location.pathname);
-    try{
-      const tokenData = await exchangeToken(code);
-      accessToken = tokenData.access_token;
-      sessionStorage.setItem('spotify_token', accessToken);
-      loginStatus.textContent = 'host connected';
-      loginBtn.textContent = 'reconnect';
-    }catch(e){
-      loginStatus.textContent = 'login failed — try again';
-    }
-  }
-})();
-
-function extractPlaylistId(url){
-  const match = url.match(/playlist\/([a-zA-Z0-9]+)/);
-  return match ? match[1] : null;
-}
-
-async function fetchPlaylistTracks(playlistId){
-  const headers = {Authorization: 'Bearer '+accessToken};
-  let items = [];
-  let url = 'https://api.spotify.com/v1/playlists/'+playlistId+'/items?limit=50&fields=items(track(id,uri,name,artists(name),preview_url,duration_ms)),next';
-  while(url && items.length < 100){
-    const res = await fetch(url, {headers});
-    if(!res.ok) throw new Error('could not load playlist — is it public, or does the host have access?');
-    const data = await res.json();
-    items = items.concat(data.items.filter(i => i.track));
-    url = data.next;
-  }
-  return items.map(i => ({
-    name: i.track.name,
-    artist: i.track.artists.map(a=>a.name).join(', '),
-    preview: i.track.preview_url,
-    uri: i.track.uri,
-    duration: i.track.duration_ms
-  }));
-}
+let sdkPlayer = null;
+let sdkDeviceId = null;
+let sdkReady = false;
 let players = ['You'];
 let scores = {};
 let round = 1;
@@ -303,149 +224,442 @@ let clipSeconds = 1;
 let currentTrack = null;
 let usedIndexes = new Set();
 let audioEl = new Audio();
+let gameOver = false;
 
-function pickTrack(){
-  if(playlistTracks.length === 0) return null;
-  if(usedIndexes.size >= playlistTracks.length) usedIndexes.clear();
+// ============ SPOTIFY AUTH ============
+function updateLoginStatus(connected) {
+  if (connected) {
+    loginStatus.textContent = '✅ connected to Spotify';
+    loginStatus.className = 'status-connected';
+    loginBtn.textContent = '🔄 reconnect';
+  } else {
+    loginStatus.textContent = '⚠️ host not connected';
+    loginStatus.className = 'status-disconnected';
+    loginBtn.textContent = '🔗 connect spotify';
+  }
+}
+
+function startLogin() {
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    response_type: 'token',
+    redirect_uri: REDIRECT_URI,
+    scope: SCOPES,
+    show_dialog: true
+  });
+  window.location.href = 'https://accounts.spotify.com/authorize?' + params.toString();
+}
+
+// Handle the redirect from Spotify
+(function handleAuthRedirect() {
+  const hash = window.location.hash.substring(1);
+  if (hash) {
+    const params = new URLSearchParams(hash);
+    const token = params.get('access_token');
+    const error = params.get('error');
+    
+    if (error) {
+      console.error('Auth error:', error);
+      updateLoginStatus(false);
+      return;
+    }
+    
+    if (token) {
+      accessToken = token;
+      sessionStorage.setItem('spotify_token', accessToken);
+      updateLoginStatus(true);
+      initSdkPlayer();
+      // Clean up the URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  } else if (accessToken) {
+    updateLoginStatus(true);
+    initSdkPlayer();
+  } else {
+    updateLoginStatus(false);
+  }
+})();
+
+loginBtn.onclick = startLogin;
+
+// ============ SPOTIFY SDK ============
+window.__sdkReadyQueue = [];
+window.onSpotifyWebPlaybackSDKReady = function() {
+  window.__spotifySDKLoaded = true;
+  window.__sdkReadyQueue.forEach(fn => fn());
+  window.__sdkReadyQueue = [];
+};
+
+function initSdkPlayer() {
+  if (!accessToken || sdkPlayer) return;
+  
+  if (!window.__spotifySDKLoaded) {
+    window.__sdkReadyQueue.push(initSdkPlayer);
+    return;
+  }
+  
+  try {
+    sdkPlayer = new Spotify.Player({
+      name: 'Blindtest party game',
+      getOAuthToken: cb => cb(accessToken),
+      volume: 0.8
+    });
+    
+    sdkPlayer.addListener('ready', ({device_id}) => {
+      sdkDeviceId = device_id;
+      sdkReady = true;
+      console.log('✅ Spotify player ready');
+    });
+    
+    sdkPlayer.addListener('not_ready', () => {
+      sdkReady = false;
+      console.log('⚠️ Spotify player not ready');
+    });
+    
+    sdkPlayer.addListener('initialization_error', (e) => {
+      console.error('Spotify init error:', e);
+    });
+    
+    sdkPlayer.connect();
+  } catch (error) {
+    console.error('Failed to initialize Spotify player:', error);
+  }
+}
+
+// Load the Spotify SDK
+const sdkScript = document.createElement('script');
+sdkScript.src = 'https://sdk.scdn.co/spotify-player.js';
+sdkScript.async = true;
+document.head.appendChild(sdkScript);
+
+// ============ PLAYLIST FUNCTIONS ============
+function extractPlaylistId(url) {
+  const match = url.match(/playlist\/([a-zA-Z0-9]+)/);
+  return match ? match[1] : null;
+}
+
+async function fetchPlaylistTracks(playlistId) {
+  const headers = {
+    'Authorization': 'Bearer ' + accessToken,
+    'Content-Type': 'application/json'
+  };
+  
+  let items = [];
+  let url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50&fields=items(track(id,uri,name,artists(name),preview_url,duration_ms)),next`;
+  
+  try {
+    while (url && items.length < 100) {
+      const response = await fetch(url, { headers });
+      
+      if (response.status === 401) {
+        // Token expired
+        sessionStorage.removeItem('spotify_token');
+        accessToken = null;
+        updateLoginStatus(false);
+        throw new Error('Session expired. Please reconnect Spotify.');
+      }
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error?.message || 'Failed to load playlist');
+      }
+      
+      const data = await response.json();
+      const tracks = data.items
+        .filter(item => item.track && item.track.id)
+        .map(item => ({
+          id: item.track.id,
+          name: item.track.name,
+          artist: item.track.artists.map(a => a.name).join(', '),
+          preview: item.track.preview_url,
+          uri: item.track.uri,
+          duration: item.track.duration_ms
+        }));
+      
+      items = items.concat(tracks);
+      url = data.next;
+    }
+  } catch (error) {
+    console.error('Error fetching playlist:', error);
+    throw error;
+  }
+  
+  return items;
+}
+
+// ============ GAME LOGIC ============
+function pickTrack() {
+  if (playlistTracks.length === 0) return null;
+  if (usedIndexes.size >= playlistTracks.length) usedIndexes.clear();
+  
   let idx;
-  do{ idx = Math.floor(Math.random()*playlistTracks.length); } while(usedIndexes.has(idx));
+  let attempts = 0;
+  do {
+    idx = Math.floor(Math.random() * playlistTracks.length);
+    attempts++;
+  } while (usedIndexes.has(idx) && attempts < 50);
+  
   usedIndexes.add(idx);
   return playlistTracks[idx];
 }
 
-function playClip(seconds){
-  if(currentTrack && currentTrack.preview){
-    audioEl.src = currentTrack.preview;
-    audioEl.currentTime = Math.floor(Math.random()*20);
-    audioEl.play();
+async function playViaSDK(seconds) {
+  if (!sdkReady || !sdkDeviceId || !currentTrack) {
+    // Fallback to preview URL if available
+    if (currentTrack?.preview) {
+      playPreview(seconds);
+      return;
+    }
+    // Fallback to beep
+    beep(seconds);
+    return;
+  }
+  
+  const maxStart = Math.max(0, (currentTrack.duration || 180000) - (seconds * 1000) - 1000);
+  const startMs = Math.floor(Math.random() * Math.min(maxStart, currentTrack.duration * 0.8));
+  
+  try {
+    await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${sdkDeviceId}`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': 'Bearer ' + accessToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        uris: [currentTrack.uri],
+        position_ms: startMs
+      })
+    });
+    
     disc.classList.add('spin');
-    setTimeout(()=>{ audioEl.pause(); disc.classList.remove('spin'); }, seconds*1000);
+    setTimeout(async () => {
+      try {
+        await fetch(`https://api.spotify.com/v1/me/player/pause?device_id=${sdkDeviceId}`, {
+          method: 'PUT',
+          headers: { 'Authorization': 'Bearer ' + accessToken }
+        });
+      } catch (e) {
+        console.warn('Could not pause player:', e);
+      }
+      disc.classList.remove('spin');
+    }, seconds * 1000 + 100);
+  } catch (error) {
+    console.warn('Spotify playback failed, falling back:', error);
+    if (currentTrack.preview) {
+      playPreview(seconds);
+    } else {
+      beep(seconds);
+    }
+  }
+}
+
+function playPreview(seconds) {
+  audioEl.src = currentTrack.preview;
+  audioEl.currentTime = Math.floor(Math.random() * Math.max(0, audioEl.duration - seconds));
+  audioEl.play().catch(() => beep(seconds));
+  disc.classList.add('spin');
+  setTimeout(() => {
+    audioEl.pause();
+    disc.classList.remove('spin');
+  }, seconds * 1000 + 100);
+}
+
+function beep(seconds) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 220 + Math.random() * 320;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    gain.gain.setValueAtTime(0.001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + seconds);
+    osc.start();
+    osc.stop(ctx.currentTime + seconds + 0.05);
+    disc.classList.add('spin');
+    setTimeout(() => disc.classList.remove('spin'), seconds * 1000 + 100);
+  } catch (e) {
+    console.warn('Beep failed:', e);
+  }
+}
+
+function playClip(seconds) {
+  if (currentTrack && currentTrack.uri && sdkReady && sdkDeviceId) {
+    playViaSDK(seconds);
+  } else if (currentTrack?.preview) {
+    playPreview(seconds);
   } else {
     beep(seconds);
   }
 }
 
-function beep(seconds){
-  const ctx = new (window.AudioContext||window.webkitAudioContext)();
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.type = 'sine';
-  osc.frequency.value = 220 + Math.random()*320;
-  osc.connect(gain); gain.connect(ctx.destination);
-  gain.gain.setValueAtTime(0.001, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.03);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+seconds);
-  osc.start();
-  osc.stop(ctx.currentTime+seconds+0.05);
-  disc.classList.add('spin');
-  setTimeout(()=>disc.classList.remove('spin'), seconds*1000+100);
+function renderScoreboard() {
+  scoreboard.textContent = players.map(p => `${p}: ${scores[p] || 0}`).join('  ·  ');
 }
 
-function renderScoreboard(){
-  scoreboard.textContent = players.map(p => p+': '+(scores[p]||0)).join('  ·  ');
+function advance() {
+  if (gameOver) return;
+  
+  playerIdx = (playerIdx + 1) % players.length;
+  if (playerIdx === 0) round++;
+  
+  if (round > TOTAL_ROUNDS) {
+    gameOver = true;
+    result.innerHTML = '<span class="result-ok">🏆 Game Over! Final scores above</span>';
+    playBtn.disabled = true;
+    guessBtn.disabled = true;
+    skipBtn.disabled = true;
+    return;
+  }
+  
+  newRound();
 }
 
-function newRound(){
+function newRound() {
   triesLeft = 3;
   clipSeconds = 1;
   guess.value = '';
   result.textContent = '';
   tries.textContent = triesLeft;
-  hint.innerHTML = '1 second clip · <span id="tries">'+triesLeft+'</span> extra listens left';
+  hint.innerHTML = `1 second clip · <span id="tries">${triesLeft}</span> extra listens left`;
   roundEl.textContent = round;
   turnLabel.textContent = players[playerIdx] + "'s turn";
   currentTrack = pickTrack();
+  
+  if (!currentTrack) {
+    result.innerHTML = '<span class="result-hint">No more tracks in playlist!</span>';
+    gameOver = true;
+  }
 }
 
+function checkGuess(text) {
+  if (!currentTrack) return false;
+  const g = text.toLowerCase().trim();
+  const name = currentTrack.name.toLowerCase();
+  const artist = currentTrack.artist.toLowerCase();
+  
+  // Check if guess matches track name or artist
+  return g.includes(name) || name.includes(g) || 
+         g.includes(artist) || artist.includes(g) ||
+         // Check if guess contains key words from both name and artist
+         (g.split(' ').some(word => name.includes(word) && artist.includes(word)));
+}
+
+// ============ GAME START ============
+const TOTAL_ROUNDS = 5;
+
 startBtn.onclick = async () => {
-  if(!linkInput.value.trim()){
+  if (!linkInput.value.trim()) {
     linkInput.style.borderColor = '#e24b4a';
+    setTimeout(() => linkInput.style.borderColor = '', 2000);
     return;
   }
-  if(!accessToken){
+  
+  if (!accessToken) {
+    updateLoginStatus(false);
     result.textContent = '';
-    loginStatus.textContent = 'connect spotify first';
     return;
   }
+  
   const playlistId = extractPlaylistId(linkInput.value.trim());
-  if(!playlistId){
+  if (!playlistId) {
     linkInput.style.borderColor = '#e24b4a';
+    linkInput.placeholder = '❌ Invalid playlist URL';
+    setTimeout(() => {
+      linkInput.style.borderColor = '';
+      linkInput.placeholder = 'https://open.spotify.com/playlist/...';
+    }, 2000);
     return;
   }
+  
   startBtn.disabled = true;
-  startBtn.textContent = 'loading playlist…';
-  try{
+  startBtn.textContent = '⏳ loading playlist…';
+  
+  try {
     playlistTracks = await fetchPlaylistTracks(playlistId);
-  }catch(e){
+  } catch (error) {
     startBtn.disabled = false;
-    startBtn.textContent = 'start the game';
-    loginStatus.textContent = e.message;
+    startBtn.textContent = '🚀 start the game';
+    loginStatus.textContent = '❌ ' + error.message;
     return;
   }
+  
   startBtn.disabled = false;
-  startBtn.textContent = 'start the game';
-  if(playlistTracks.length === 0){
-    loginStatus.textContent = 'no tracks found in that playlist';
+  startBtn.textContent = '🚀 start the game';
+  
+  if (playlistTracks.length === 0) {
+    loginStatus.textContent = '❌ No tracks found in playlist';
     return;
   }
+  
+  // Setup players
   const raw = playersInput.value.trim();
-  players = raw ? raw.split(',').map(s=>s.trim()).filter(Boolean) : ['You'];
-  players.forEach(p => scores[p]=0);
-  round = 1; playerIdx = 0;
+  players = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : ['You'];
+  players.forEach(p => scores[p] = 0);
+  
+  // Reset game state
+  round = 1;
+  playerIdx = 0;
+  gameOver = false;
+  usedIndexes.clear();
   totalRoundsEl.textContent = TOTAL_ROUNDS;
+  
   setup.style.display = 'none';
   game.style.display = 'block';
   renderScoreboard();
   newRound();
+  
+  // Enable buttons
+  playBtn.disabled = false;
+  guessBtn.disabled = false;
+  skipBtn.disabled = false;
 };
 
-playBtn.onclick = () => playClip(clipSeconds);
-
-function advance(){
-  playerIdx = (playerIdx+1) % players.length;
-  if(playerIdx === 0) round++;
-  if(round > TOTAL_ROUNDS){
-    result.innerHTML = '<span class="result-ok">game over! final scores above</span>';
-    playBtn.disabled = true; guessBtn.disabled = true; skipBtn.disabled = true;
-    return;
-  }
-  newRound();
-}
-
-function checkGuess(text){
-  if(!currentTrack) return false;
-  const g = text.toLowerCase();
-  return g.includes(currentTrack.name.toLowerCase()) ||
-         currentTrack.name.toLowerCase().includes(g) ||
-         g.includes(currentTrack.artist.toLowerCase());
-}
+// ============ GAME CONTROLS ============
+playBtn.onclick = () => {
+  if (!currentTrack || gameOver) return;
+  playClip(clipSeconds);
+};
 
 guessBtn.onclick = () => {
-  if(!guess.value.trim()) return;
-  const correct = checkGuess(guess.value.trim());
-  if(correct){
+  if (!currentTrack || gameOver) return;
+  const guessText = guess.value.trim();
+  if (!guessText) return;
+  
+  const correct = checkGuess(guessText);
+  if (correct) {
     const bonus = triesLeft + 1;
-    scores[players[playerIdx]] = (scores[players[playerIdx]]||0) + bonus;
-    result.innerHTML = '<span class="result-ok">nice! it was '+currentTrack.name+' — '+currentTrack.artist+' (+'+bonus+' points)</span>';
+    scores[players[playerIdx]] = (scores[players[playerIdx]] || 0) + bonus;
+    result.innerHTML = `<span class="result-ok">🎉 Correct! It was "${currentTrack.name}" — ${currentTrack.artist} (+${bonus} points)</span>`;
     renderScoreboard();
-    setTimeout(advance, 1600);
+    setTimeout(advance, 2000);
     return;
   }
-  if(triesLeft > 0){
-    triesLeft--; clipSeconds++;
+  
+  if (triesLeft > 0) {
+    triesLeft--;
+    clipSeconds++;
     tries.textContent = triesLeft;
-    hint.innerHTML = clipSeconds+' second clip · <span id="tries">'+triesLeft+'</span> extra listens left';
-    result.innerHTML = '<span class="result-hint">not it — try again</span>';
+    hint.innerHTML = `${clipSeconds} second clip · <span id="tries">${triesLeft}</span> extra listens left`;
+    result.innerHTML = '<span class="result-hint">❌ Not quite — try again</span>';
   } else {
-    result.innerHTML = '<span class="result-hint">out of listens — it was '+currentTrack.name+' — '+currentTrack.artist+'</span>';
-    setTimeout(advance, 1800);
+    result.innerHTML = `<span class="result-hint">😔 Out of listens! It was "${currentTrack.name}" — ${currentTrack.artist}</span>`;
+    setTimeout(advance, 2000);
   }
 };
 
 skipBtn.onclick = () => {
-  result.innerHTML = '<span class="result-hint">skipped — it was '+(currentTrack?currentTrack.name:'?')+'</span>';
-  setTimeout(advance, 1000);
+  if (!currentTrack || gameOver) return;
+  result.innerHTML = `<span class="result-hint">⏭️ Skipped — it was "${currentTrack.name}" — ${currentTrack.artist}</span>`;
+  setTimeout(advance, 1500);
 };
+
+// ============ INIT ============
+console.log('🎵 Blindtest game loaded!');
+console.log('📋 Make sure your redirect URI is set to:', REDIRECT_URI);
+console.log('🔑 Client ID:', CLIENT_ID);
 </script>
 </body>
 </html>
