@@ -154,21 +154,6 @@
     color: #e24b4a;
   }
   
-  .config-warning {
-    background: #fff3cd;
-    border: 2px solid #ffc107;
-    border-radius: 12px;
-    padding: 1rem;
-    margin-bottom: 1rem;
-    font-size: 0.85rem;
-  }
-  .config-warning code {
-    background: #f8f9fa;
-    padding: 0.2rem 0.4rem;
-    border-radius: 4px;
-    font-size: 0.8rem;
-  }
-  
   .error-box {
     background: #f8d7da;
     border: 2px solid #dc3545;
@@ -190,6 +175,17 @@
     font-size: 0.9rem;
     display: none;
   }
+  
+  .scope-check {
+    background: #e7f3ff;
+    border: 2px solid #2196F3;
+    border-radius: 12px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    font-size: 0.85rem;
+  }
+  .scope-check .valid { color: #0f6e56; }
+  .scope-check .invalid { color: #dc3545; }
 </style>
 </head>
 <body>
@@ -200,10 +196,9 @@
   </div>
 
   <div class="card" id="setup">
-    <div id="configWarning" class="config-warning" style="display:none;">
-      ⚠️ <strong>Configuration Required:</strong><br>
-      Add this redirect URI to your Spotify App:<br>
-      <code id="redirectUriDisplay"></code>
+    <div id="scopeCheck" class="scope-check">
+      <strong>🔑 Required Permissions:</strong><br>
+      <span id="scopeStatus">Loading...</span>
     </div>
     
     <div id="errorBox" class="error-box"></div>
@@ -244,6 +239,7 @@
 const CLIENT_ID = '748e3e8594814b78a534f113a72a338d';
 const REDIRECT_URI = window.location.origin + window.location.pathname;
 
+// CRITICAL: These scopes must be requested
 const SCOPES = [
   'playlist-read-private',
   'playlist-read-collaborative',
@@ -253,10 +249,7 @@ const SCOPES = [
   'user-modify-playback-state',
   'user-read-playback-state',
   'user-library-read'
-].join(' ');
-
-// Show the redirect URI for configuration
-document.getElementById('redirectUriDisplay').textContent = REDIRECT_URI;
+];
 
 // ============ DOM ELEMENTS ============
 const $ = id => document.getElementById(id);
@@ -266,9 +259,8 @@ const startBtn=$('startBtn'), playBtn=$('playBtn'), guessBtn=$('guessBtn'), skip
 const disc=$('disc'), hint=$('hint'), tries=$('tries'), result=$('result'), guess=$('guess');
 const roundEl=$('round'), totalRoundsEl=$('totalRounds'), turnLabel=$('turnLabel'), scoreboard=$('scoreboard');
 const loginBtn=$('loginBtn'), loginStatus=$('loginStatus');
-const configWarning=$('configWarning');
-const errorBox=$('errorBox');
-const successBox=$('successBox');
+const errorBox=$('errorBox'), successBox=$('successBox');
+const scopeStatus=$('scopeStatus');
 
 // ============ STATE ============
 let accessToken = null;
@@ -331,17 +323,50 @@ async function generateCodeChallenge(codeVerifier) {
   return base64url(hash);
 }
 
+// ============ SCOPE CHECK ============
+async function checkTokenScopes() {
+  if (!accessToken) {
+    scopeStatus.innerHTML = '❌ <span class="invalid">Not connected</span>';
+    return;
+  }
+  
+  try {
+    const response = await fetch('https://api.spotify.com/v1/me', {
+      headers: { 'Authorization': 'Bearer ' + accessToken }
+    });
+    
+    if (response.ok) {
+      const scopes = response.headers.get('X-OAuth-Scopes') || '';
+      const hasScopes = SCOPES.every(s => scopes.includes(s));
+      
+      if (hasScopes) {
+        scopeStatus.innerHTML = `✅ <span class="valid">All permissions granted!</span>`;
+      } else {
+        const missing = SCOPES.filter(s => !scopes.includes(s));
+        scopeStatus.innerHTML = `
+          ⚠️ Missing scopes: <span class="invalid">${missing.join(', ')}</span><br>
+          <small>Click "Reconnect" to grant all permissions</small>
+        `;
+      }
+    }
+  } catch (error) {
+    console.error('Scope check failed:', error);
+  }
+}
+
 // ============ SPOTIFY AUTH ============
 function updateLoginStatus(connected) {
   if (connected) {
     loginStatus.textContent = '✅ connected to Spotify';
     loginStatus.className = 'status-connected';
     loginBtn.textContent = '🔄 reconnect';
+    checkTokenScopes();
     showSuccess('Connected to Spotify!');
   } else {
     loginStatus.textContent = '⚠️ host not connected';
     loginStatus.className = 'status-disconnected';
     loginBtn.textContent = '🔗 connect spotify';
+    scopeStatus.innerHTML = '❌ <span class="invalid">Not connected</span>';
   }
 }
 
@@ -355,7 +380,7 @@ async function startLogin() {
     client_id: CLIENT_ID,
     response_type: 'code',
     redirect_uri: REDIRECT_URI,
-    scope: SCOPES,
+    scope: SCOPES.join(' '),
     code_challenge_method: 'S256',
     code_challenge: codeChallenge,
     show_dialog: true
@@ -589,20 +614,19 @@ function extractPlaylistId(url) {
 
 async function fetchPlaylistTracks(playlistId) {
   let items = [];
-  let url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50`;
   
   try {
-    // First, try to get playlist info to check if it's accessible
-    const playlistInfo = await spotifyFetch(`https://api.spotify.com/v1/playlists/${playlistId}?fields=id,name,public,owner`);
+    // First, verify the playlist is accessible
+    const playlistInfo = await spotifyFetch(`https://api.spotify.com/v1/playlists/${playlistId}`);
     const playlistData = await playlistInfo.json();
     console.log('📋 Playlist info:', playlistData);
     
-    // Now fetch tracks
-    while (url && items.length < 100) {
-      const response = await spotifyFetch(url);
-      const data = await response.json();
+    // Check if we can access tracks
+    if (playlistData.tracks) {
+      const tracksResponse = await spotifyFetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50`);
+      const tracksData = await tracksResponse.json();
       
-      const tracks = data.items
+      items = tracksData.items
         .filter(item => item.track && item.track.id)
         .map(item => ({
           id: item.track.id,
@@ -613,12 +637,34 @@ async function fetchPlaylistTracks(playlistId) {
           duration: item.track.duration_ms
         }));
       
-      items = items.concat(tracks);
-      url = data.next;
+      // Handle pagination
+      let nextUrl = tracksData.next;
+      while (nextUrl && items.length < 100) {
+        const nextResponse = await spotifyFetch(nextUrl);
+        const nextData = await nextResponse.json();
+        const moreTracks = nextData.items
+          .filter(item => item.track && item.track.id)
+          .map(item => ({
+            id: item.track.id,
+            name: item.track.name,
+            artist: item.track.artists.map(a => a.name).join(', '),
+            preview: item.track.preview_url,
+            uri: item.track.uri,
+            duration: item.track.duration_ms
+          }));
+        items = items.concat(moreTracks);
+        nextUrl = nextData.next;
+      }
+    } else {
+      throw new Error('Cannot access tracks in this playlist');
     }
   } catch (error) {
     console.error('Error fetching playlist:', error);
-    throw new Error(`Cannot access playlist: ${error.message}. Make sure the playlist is public or you have access to it.`);
+    throw new Error(`Cannot access playlist: ${error.message}`);
+  }
+  
+  if (items.length === 0) {
+    throw new Error('No tracks found in this playlist');
   }
   
   return items;
@@ -897,12 +943,12 @@ console.log('🎵 Blindtest game loaded!');
 console.log('📋 Your redirect URI is:', REDIRECT_URI);
 console.log('📋 Add this to your Spotify App Dashboard under "Redirect URIs"');
 console.log('🔑 Client ID:', CLIENT_ID);
+console.log('📌 Required scopes:', SCOPES.join(', '));
 
-setTimeout(() => {
-  if (!accessToken && !window.location.search.includes('code')) {
-    configWarning.style.display = 'block';
-  }
-}, 1000);
+// Check token scopes if connected
+if (accessToken) {
+  checkTokenScopes();
+}
 </script>
 </body>
 </html>
