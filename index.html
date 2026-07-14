@@ -180,7 +180,6 @@
   <p class="footnote" id="footnote">running in demo mode — clips are placeholder tones until this is connected to Spotify</p>
 </div>
 
-<script src="https://sdk.scdn.co/spotify-player.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const setup=$('setup'), game=$('game');
@@ -246,6 +245,25 @@ async function exchangeToken(code){
 let accessToken = sessionStorage.getItem('spotify_token') || null;
 let playlistTracks = [];
 
+let sdkPlayer = null;
+let sdkDeviceId = null;
+let sdkReady = false;
+
+function initSdkPlayer(){
+  if(!accessToken || sdkPlayer) return;
+  sdkPlayer = new Spotify.Player({
+    name: 'Blindtest party game',
+    getOAuthToken: cb => cb(accessToken),
+    volume: 0.8
+  });
+  sdkPlayer.addListener('ready', ({device_id}) => {
+    sdkDeviceId = device_id;
+    sdkReady = true;
+  });
+  sdkPlayer.addListener('not_ready', () => { sdkReady = false; });
+  sdkPlayer.connect();
+}
+
 if(accessToken){
   loginStatus.textContent = 'host connected';
   loginBtn.textContent = 'reconnect';
@@ -305,25 +323,6 @@ let clipSeconds = 1;
 let currentTrack = null;
 let usedIndexes = new Set();
 let audioEl = new Audio();
-
-let sdkPlayer = null;
-let sdkDeviceId = null;
-let sdkReady = false;
-
-function initSdkPlayer(){
-  if(!accessToken || sdkPlayer) return;
-  sdkPlayer = new Spotify.Player({
-    name: 'Blindtest party game',
-    getOAuthToken: cb => cb(accessToken),
-    volume: 0.8
-  });
-  sdkPlayer.addListener('ready', ({device_id}) => {
-    sdkDeviceId = device_id;
-    sdkReady = true;
-  });
-  sdkPlayer.addListener('not_ready', () => { sdkReady = false; });
-  sdkPlayer.connect();
-}
 
 window.onSpotifyWebPlaybackSDKReady = () => { initSdkPlayer(); };
 
@@ -489,5 +488,6 @@ skipBtn.onclick = () => {
   setTimeout(advance, 1000);
 };
 </script>
+<script src="https://sdk.scdn.co/spotify-player.js"></script>
 </body>
 </html>
