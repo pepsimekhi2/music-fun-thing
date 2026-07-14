@@ -168,6 +168,28 @@
     border-radius: 4px;
     font-size: 0.8rem;
   }
+  
+  .error-box {
+    background: #f8d7da;
+    border: 2px solid #dc3545;
+    border-radius: 12px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    color: #721c24;
+    font-size: 0.9rem;
+    display: none;
+  }
+  
+  .success-box {
+    background: #d4edda;
+    border: 2px solid #28a745;
+    border-radius: 12px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    color: #155724;
+    font-size: 0.9rem;
+    display: none;
+  }
 </style>
 </head>
 <body>
@@ -183,6 +205,9 @@
       Add this redirect URI to your Spotify App:<br>
       <code id="redirectUriDisplay"></code>
     </div>
+    
+    <div id="errorBox" class="error-box"></div>
+    <div id="successBox" class="success-box"></div>
     
     <div id="loginRow" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;padding-bottom:1rem;border-bottom:2px dashed #ddd;">
       <span id="loginStatus" class="status-disconnected">⚠️ host not connected</span>
@@ -217,10 +242,6 @@
 <script>
 // ============ CONFIGURATION ============
 const CLIENT_ID = '748e3e8594814b78a534f113a72a338d';
-
-// IMPORTANT: This MUST match EXACTLY what's in your Spotify App Dashboard
-// For local development, add: http://localhost:3000 and http://localhost:3000/callback
-// For production, add: https://music-fun-thing.vercel.app and https://music-fun-thing.vercel.app/callback
 const REDIRECT_URI = window.location.origin + window.location.pathname;
 
 const SCOPES = [
@@ -230,7 +251,8 @@ const SCOPES = [
   'user-read-email',
   'streaming',
   'user-modify-playback-state',
-  'user-read-playback-state'
+  'user-read-playback-state',
+  'user-library-read'
 ].join(' ');
 
 // Show the redirect URI for configuration
@@ -245,6 +267,8 @@ const disc=$('disc'), hint=$('hint'), tries=$('tries'), result=$('result'), gues
 const roundEl=$('round'), totalRoundsEl=$('totalRounds'), turnLabel=$('turnLabel'), scoreboard=$('scoreboard');
 const loginBtn=$('loginBtn'), loginStatus=$('loginStatus');
 const configWarning=$('configWarning');
+const errorBox=$('errorBox');
+const successBox=$('successBox');
 
 // ============ STATE ============
 let accessToken = null;
@@ -263,6 +287,23 @@ let currentTrack = null;
 let usedIndexes = new Set();
 let audioEl = new Audio();
 let gameOver = false;
+
+// ============ UTILITY FUNCTIONS ============
+function showError(message) {
+  errorBox.style.display = 'block';
+  errorBox.textContent = '❌ ' + message;
+  setTimeout(() => {
+    errorBox.style.display = 'none';
+  }, 8000);
+}
+
+function showSuccess(message) {
+  successBox.style.display = 'block';
+  successBox.textContent = '✅ ' + message;
+  setTimeout(() => {
+    successBox.style.display = 'none';
+  }, 5000);
+}
 
 // ============ PKCE FUNCTIONS ============
 function base64url(buffer) {
@@ -296,6 +337,7 @@ function updateLoginStatus(connected) {
     loginStatus.textContent = '✅ connected to Spotify';
     loginStatus.className = 'status-connected';
     loginBtn.textContent = '🔄 reconnect';
+    showSuccess('Connected to Spotify!');
   } else {
     loginStatus.textContent = '⚠️ host not connected';
     loginStatus.className = 'status-disconnected';
@@ -307,7 +349,6 @@ async function startLogin() {
   const codeVerifier = randomString(64);
   const codeChallenge = await generateCodeChallenge(codeVerifier);
   
-  // Store verifier for later use
   sessionStorage.setItem('code_verifier', codeVerifier);
   
   const params = new URLSearchParams({
@@ -403,7 +444,7 @@ async function refreshAccessToken() {
   if (error) {
     console.error('Auth error:', error);
     updateLoginStatus(false);
-    loginStatus.textContent = '❌ Auth error: ' + error;
+    showError('Auth error: ' + error);
     return;
   }
   
@@ -421,16 +462,14 @@ async function refreshAccessToken() {
       updateLoginStatus(true);
       initSdkPlayer();
       
-      // Clean up the URL
       const cleanUrl = window.location.origin + window.location.pathname;
       window.history.replaceState({}, document.title, cleanUrl);
     } catch (error) {
       console.error('Token exchange failed:', error);
       updateLoginStatus(false);
-      loginStatus.textContent = '❌ Login failed: ' + error.message;
+      showError('Login failed: ' + error.message);
     }
   } else {
-    // Check for existing token
     const savedToken = sessionStorage.getItem('spotify_token');
     const savedRefresh = sessionStorage.getItem('spotify_refresh_token');
     
@@ -488,7 +527,6 @@ function initSdkPlayer() {
     
     sdkPlayer.addListener('authentication_error', (e) => {
       console.error('Spotify auth error:', e);
-      // Try to refresh token
       refreshAccessToken();
     });
     
@@ -514,14 +552,12 @@ async function spotifyFetch(url, options = {}) {
   
   let response = await fetch(url, { ...options, headers });
   
-  // If token expired, try to refresh
   if (response.status === 401) {
     const newToken = await refreshAccessToken();
     if (newToken) {
       headers['Authorization'] = 'Bearer ' + newToken;
       response = await fetch(url, { ...options, headers });
     } else {
-      // Refresh failed, force re-login
       sessionStorage.removeItem('spotify_token');
       sessionStorage.removeItem('spotify_refresh_token');
       accessToken = null;
@@ -532,8 +568,14 @@ async function spotifyFetch(url, options = {}) {
   }
   
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.error?.message || `HTTP ${response.status}`);
+    let errorMessage;
+    try {
+      const error = await response.json();
+      errorMessage = error.error?.message || error.error_description || `HTTP ${response.status}`;
+    } catch {
+      errorMessage = `HTTP ${response.status}`;
+    }
+    throw new Error(errorMessage);
   }
   
   return response;
@@ -550,6 +592,12 @@ async function fetchPlaylistTracks(playlistId) {
   let url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50`;
   
   try {
+    // First, try to get playlist info to check if it's accessible
+    const playlistInfo = await spotifyFetch(`https://api.spotify.com/v1/playlists/${playlistId}?fields=id,name,public,owner`);
+    const playlistData = await playlistInfo.json();
+    console.log('📋 Playlist info:', playlistData);
+    
+    // Now fetch tracks
     while (url && items.length < 100) {
       const response = await spotifyFetch(url);
       const data = await response.json();
@@ -570,7 +618,7 @@ async function fetchPlaylistTracks(playlistId) {
     }
   } catch (error) {
     console.error('Error fetching playlist:', error);
-    throw error;
+    throw new Error(`Cannot access playlist: ${error.message}. Make sure the playlist is public or you have access to it.`);
   }
   
   return items;
@@ -594,12 +642,10 @@ function pickTrack() {
 
 async function playViaSDK(seconds) {
   if (!sdkReady || !sdkDeviceId || !currentTrack) {
-    // Fallback to preview URL if available
     if (currentTrack?.preview) {
       playPreview(seconds);
       return;
     }
-    // Fallback to beep
     beep(seconds);
     return;
   }
@@ -726,7 +772,6 @@ function checkGuess(text) {
   const name = currentTrack.name.toLowerCase();
   const artist = currentTrack.artist.toLowerCase();
   
-  // Check if guess matches track name or artist
   return g.includes(name) || name.includes(g) || 
          g.includes(artist) || artist.includes(g) ||
          (g.split(' ').some(word => name.includes(word) && artist.includes(word)));
@@ -736,26 +781,30 @@ function checkGuess(text) {
 const TOTAL_ROUNDS = 5;
 
 startBtn.onclick = async () => {
-  if (!linkInput.value.trim()) {
+  const linkValue = linkInput.value.trim();
+  if (!linkValue) {
     linkInput.style.borderColor = '#e24b4a';
     setTimeout(() => linkInput.style.borderColor = '', 2000);
+    showError('Please enter a Spotify playlist URL');
     return;
   }
   
   if (!accessToken) {
     updateLoginStatus(false);
     loginStatus.textContent = '⚠️ Please connect Spotify first';
+    showError('Please connect to Spotify first');
     return;
   }
   
-  const playlistId = extractPlaylistId(linkInput.value.trim());
+  const playlistId = extractPlaylistId(linkValue);
   if (!playlistId) {
     linkInput.style.borderColor = '#e24b4a';
     linkInput.placeholder = '❌ Invalid playlist URL';
+    showError('Invalid playlist URL. Use the format: https://open.spotify.com/playlist/...');
     setTimeout(() => {
       linkInput.style.borderColor = '';
       linkInput.placeholder = 'https://open.spotify.com/playlist/...';
-    }, 2000);
+    }, 3000);
     return;
   }
   
@@ -767,7 +816,7 @@ startBtn.onclick = async () => {
   } catch (error) {
     startBtn.disabled = false;
     startBtn.textContent = '🚀 start the game';
-    loginStatus.textContent = '❌ ' + error.message;
+    showError(error.message);
     return;
   }
   
@@ -775,16 +824,14 @@ startBtn.onclick = async () => {
   startBtn.textContent = '🚀 start the game';
   
   if (playlistTracks.length === 0) {
-    loginStatus.textContent = '❌ No tracks found in playlist';
+    showError('No tracks found in this playlist');
     return;
   }
   
-  // Setup players
   const raw = playersInput.value.trim();
   players = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : ['You'];
   players.forEach(p => scores[p] = 0);
   
-  // Reset game state
   round = 1;
   playerIdx = 0;
   gameOver = false;
@@ -796,10 +843,11 @@ startBtn.onclick = async () => {
   renderScoreboard();
   newRound();
   
-  // Enable buttons
   playBtn.disabled = false;
   guessBtn.disabled = false;
   skipBtn.disabled = false;
+  
+  showSuccess(`Loaded ${playlistTracks.length} tracks from playlist!`);
 };
 
 // ============ GAME CONTROLS ============
@@ -811,7 +859,10 @@ playBtn.onclick = () => {
 guessBtn.onclick = () => {
   if (!currentTrack || gameOver) return;
   const guessText = guess.value.trim();
-  if (!guessText) return;
+  if (!guessText) {
+    showError('Please enter a guess');
+    return;
+  }
   
   const correct = checkGuess(guessText);
   if (correct) {
@@ -847,9 +898,7 @@ console.log('📋 Your redirect URI is:', REDIRECT_URI);
 console.log('📋 Add this to your Spotify App Dashboard under "Redirect URIs"');
 console.log('🔑 Client ID:', CLIENT_ID);
 
-// Show warning if redirect URI might not be configured
 setTimeout(() => {
-  // Check if we have a token but are on the main page (not callback)
   if (!accessToken && !window.location.search.includes('code')) {
     configWarning.style.display = 'block';
   }
