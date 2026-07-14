@@ -141,16 +141,8 @@
     margin-top:1.25rem;
   }
 </style>
-<script>
-  window.__sdkReadyQueue = [];
-  window.onSpotifyWebPlaybackSDKReady = function(){
-    window.__spotifySDKLoaded = true;
-    window.__sdkReadyQueue.forEach(fn => fn());
-    window.__sdkReadyQueue = [];
-  };
-</script>
-<script src="https://sdk.scdn.co/spotify-player.js"></script>
 </head>
+
 <body>
 <div class="stage">
   <div class="brand">
@@ -201,7 +193,7 @@ const loginBtn=$('loginBtn'), loginStatus=$('loginStatus');
 const TOTAL_ROUNDS = 5;
 const CLIENT_ID = '748e3e8594814b78a534f113a72a338d';
 const REDIRECT_URI = 'https://music-fun-thing.vercel.app/api/done';
-const SCOPES = 'playlist-read-private playlist-read-collaborative user-library-read streaming user-read-email user-read-private user-modify-playback-state';
+const SCOPES = 'playlist-read-private playlist-read-collaborative user-library-read';
 
 function base64url(buf){
   return btoa(String.fromCharCode(...new Uint8Array(buf)))
@@ -254,33 +246,9 @@ async function exchangeToken(code){
 let accessToken = sessionStorage.getItem('spotify_token') || null;
 let playlistTracks = [];
 
-let sdkPlayer = null;
-let sdkDeviceId = null;
-let sdkReady = false;
-
-function initSdkPlayer(){
-  if(!accessToken || sdkPlayer) return;
-  if(!window.__spotifySDKLoaded){
-    window.__sdkReadyQueue.push(initSdkPlayer);
-    return;
-  }
-  sdkPlayer = new Spotify.Player({
-    name: 'Blindtest party game',
-    getOAuthToken: cb => cb(accessToken),
-    volume: 0.8
-  });
-  sdkPlayer.addListener('ready', ({device_id}) => {
-    sdkDeviceId = device_id;
-    sdkReady = true;
-  });
-  sdkPlayer.addListener('not_ready', () => { sdkReady = false; });
-  sdkPlayer.connect();
-}
-
 if(accessToken){
   loginStatus.textContent = 'host connected';
   loginBtn.textContent = 'reconnect';
-  initSdkPlayer();
 }
 
 loginBtn.onclick = startLogin;
@@ -296,7 +264,6 @@ loginBtn.onclick = startLogin;
       sessionStorage.setItem('spotify_token', accessToken);
       loginStatus.textContent = 'host connected';
       loginBtn.textContent = 'reconnect';
-      initSdkPlayer();
     }catch(e){
       loginStatus.textContent = 'login failed — try again';
     }
@@ -346,27 +313,8 @@ function pickTrack(){
   return playlistTracks[idx];
 }
 
-async function playViaSDK(seconds){
-  const maxStart = Math.max(0, (currentTrack.duration||180000) - seconds*1000 - 5000);
-  const startMs = Math.floor(Math.random()*maxStart);
-  await fetch('https://api.spotify.com/v1/me/player/play?device_id='+sdkDeviceId, {
-    method:'PUT',
-    headers:{Authorization:'Bearer '+accessToken, 'Content-Type':'application/json'},
-    body: JSON.stringify({uris:[currentTrack.uri], position_ms:startMs})
-  });
-  disc.classList.add('spin');
-  setTimeout(async ()=>{
-    await fetch('https://api.spotify.com/v1/me/player/pause?device_id='+sdkDeviceId, {
-      method:'PUT', headers:{Authorization:'Bearer '+accessToken}
-    });
-    disc.classList.remove('spin');
-  }, seconds*1000);
-}
-
 function playClip(seconds){
-  if(currentTrack && currentTrack.uri && sdkReady && sdkDeviceId){
-    playViaSDK(seconds);
-  } else if(currentTrack && currentTrack.preview){
+  if(currentTrack && currentTrack.preview){
     audioEl.src = currentTrack.preview;
     audioEl.currentTime = Math.floor(Math.random()*20);
     audioEl.play();
