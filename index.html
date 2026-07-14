@@ -176,6 +176,16 @@
     display: none;
   }
   
+  .token-info {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 12px;
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+    font-size: 0.8rem;
+    word-break: break-all;
+  }
+  
   .example-playlists {
     background: #f8f9fa;
     border: 2px dashed #6c757d;
@@ -193,6 +203,17 @@
   .example-playlists code:hover {
     text-decoration: underline;
   }
+  
+  .status-badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 700;
+  }
+  .status-badge.success { background: #d4edda; color: #155724; }
+  .status-badge.error { background: #f8d7da; color: #721c24; }
+  .status-badge.warning { background: #fff3cd; color: #856404; }
 </style>
 </head>
 <body>
@@ -206,13 +227,19 @@
     <div id="errorBox" class="error-box"></div>
     <div id="successBox" class="success-box"></div>
     
+    <div id="tokenInfo" class="token-info">
+      <strong>🔑 Token Status:</strong> <span id="tokenStatus" class="status-badge error">Not connected</span>
+      <br>
+      <span id="tokenScopes" style="font-size:0.75rem;color:#6c757d;">No token loaded</span>
+    </div>
+    
     <div id="loginRow" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;padding-bottom:1rem;border-bottom:2px dashed #ddd;">
       <span id="loginStatus" class="status-disconnected">⚠️ host not connected</span>
       <button class="secondary" id="loginBtn" style="width:auto;padding:.5rem .9rem;font-size:.85rem;">🔗 connect spotify</button>
     </div>
     
     <div class="example-playlists">
-      <strong>🎯 Try one of these public playlists:</strong>
+      <strong>🎯 Try these public playlists:</strong>
       <code onclick="document.getElementById('link').value=this.textContent">https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M</code>
       <code onclick="document.getElementById('link').value=this.textContent">https://open.spotify.com/playlist/37i9dQZF1DX0XUsuxWHRQd</code>
       <code onclick="document.getElementById('link').value=this.textContent">https://open.spotify.com/playlist/37i9dQZF1DX3Ogo9pFvBkY</code>
@@ -246,11 +273,12 @@
 
 <script>
 // ============ CONFIGURATION ============
+// IMPORTANT: Replace with your actual Client ID
 const CLIENT_ID = '748e3e8594814b78a534f113a72a338d';
 const REDIRECT_URI = window.location.origin + window.location.pathname;
 
-// These scopes should work for public playlists
-const SCOPES = [
+// These are the essential scopes for reading playlists and playback
+const REQUIRED_SCOPES = [
   'playlist-read-private',
   'playlist-read-collaborative',
   'user-read-private',
@@ -269,6 +297,7 @@ const disc=$('disc'), hint=$('hint'), tries=$('tries'), result=$('result'), gues
 const roundEl=$('round'), totalRoundsEl=$('totalRounds'), turnLabel=$('turnLabel'), scoreboard=$('scoreboard');
 const loginBtn=$('loginBtn'), loginStatus=$('loginStatus');
 const errorBox=$('errorBox'), successBox=$('successBox');
+const tokenStatus=$('tokenStatus'), tokenScopes=$('tokenScopes');
 
 // ============ STATE ============
 let accessToken = null;
@@ -332,16 +361,24 @@ async function generateCodeChallenge(codeVerifier) {
 }
 
 // ============ SPOTIFY AUTH ============
-function updateLoginStatus(connected) {
+function updateLoginStatus(connected, scopes = '') {
   if (connected) {
     loginStatus.textContent = '✅ connected to Spotify';
     loginStatus.className = 'status-connected';
     loginBtn.textContent = '🔄 reconnect';
+    tokenStatus.textContent = 'Connected';
+    tokenStatus.className = 'status-badge success';
+    if (scopes) {
+      tokenScopes.textContent = 'Scopes: ' + scopes;
+    }
     showSuccess('Connected to Spotify!');
   } else {
     loginStatus.textContent = '⚠️ host not connected';
     loginStatus.className = 'status-disconnected';
     loginBtn.textContent = '🔗 connect spotify';
+    tokenStatus.textContent = 'Not connected';
+    tokenStatus.className = 'status-badge error';
+    tokenScopes.textContent = 'No token loaded';
   }
 }
 
@@ -355,7 +392,7 @@ async function startLogin() {
     client_id: CLIENT_ID,
     response_type: 'code',
     redirect_uri: REDIRECT_URI,
-    scope: SCOPES.join(' '),
+    scope: REQUIRED_SCOPES.join(' '),
     code_challenge_method: 'S256',
     code_challenge: codeChallenge,
     show_dialog: true
@@ -459,6 +496,9 @@ async function refreshAccessToken() {
         sessionStorage.setItem('spotify_refresh_token', refreshToken);
       }
       
+      // Verify token works by checking scopes
+      await verifyTokenScopes(accessToken);
+      
       updateLoginStatus(true);
       initSdkPlayer();
       
@@ -476,6 +516,7 @@ async function refreshAccessToken() {
     if (savedToken) {
       accessToken = savedToken;
       refreshToken = savedRefresh;
+      await verifyTokenScopes(accessToken);
       updateLoginStatus(true);
       initSdkPlayer();
     } else {
@@ -483,6 +524,34 @@ async function refreshAccessToken() {
     }
   }
 })();
+
+async function verifyTokenScopes(token) {
+  try {
+    const response = await fetch('https://api.spotify.com/v1/me', {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    
+    if (response.ok) {
+      const scopesHeader = response.headers.get('X-OAuth-Scopes') || '';
+      tokenScopes.textContent = 'Scopes: ' + (scopesHeader || 'No scopes returned');
+      
+      // Check if we have the essential scopes
+      const hasRequired = REQUIRED_SCOPES.every(s => scopesHeader.includes(s));
+      if (!hasRequired) {
+        const missing = REQUIRED_SCOPES.filter(s => !scopesHeader.includes(s));
+        tokenScopes.textContent += ' ⚠️ Missing: ' + missing.join(', ');
+        tokenStatus.textContent = 'Limited permissions';
+        tokenStatus.className = 'status-badge warning';
+        showError('Missing required scopes. Click "Reconnect" to grant all permissions.');
+      } else {
+        tokenStatus.textContent = 'Full access';
+        tokenStatus.className = 'status-badge success';
+      }
+    }
+  } catch (error) {
+    console.error('Token verification failed:', error);
+  }
+}
 
 loginBtn.onclick = startLogin;
 
@@ -525,9 +594,12 @@ function initSdkPlayer() {
       console.error('Spotify init error:', e);
     });
     
-    sdkPlayer.addListener('authentication_error', (e) => {
+    sdkPlayer.addListener('authentication_error', async (e) => {
       console.error('Spotify auth error:', e);
-      refreshAccessToken();
+      const newToken = await refreshAccessToken();
+      if (newToken) {
+        sdkPlayer._options.getOAuthToken = cb => cb(newToken);
+      }
     });
     
     sdkPlayer.connect();
@@ -551,6 +623,9 @@ async function spotifyFetch(url, options = {}) {
   };
   
   let response = await fetch(url, { ...options, headers });
+  
+  // Log response details for debugging
+  console.log(`📡 ${url} -> ${response.status}`);
   
   if (response.status === 401) {
     const newToken = await refreshAccessToken();
@@ -591,16 +666,18 @@ async function fetchPlaylistTracks(playlistId) {
   let items = [];
   
   try {
-    // Try a more permissive approach - just get the tracks directly
-    const tracksResponse = await spotifyFetch(
+    console.log(`📋 Fetching tracks for playlist: ${playlistId}`);
+    
+    // Try with market parameter for better availability
+    const response = await spotifyFetch(
       `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50&market=US`
     );
-    const tracksData = await tracksResponse.json();
+    const data = await response.json();
     
-    console.log('📋 Tracks response:', tracksData);
+    console.log(`📋 Response: ${data.items ? data.items.length : 0} tracks found`);
     
-    if (tracksData.items && tracksData.items.length > 0) {
-      items = tracksData.items
+    if (data.items && data.items.length > 0) {
+      items = data.items
         .filter(item => item.track && item.track.id)
         .map(item => ({
           id: item.track.id,
@@ -612,7 +689,7 @@ async function fetchPlaylistTracks(playlistId) {
         }));
       
       // Handle pagination
-      let nextUrl = tracksData.next;
+      let nextUrl = data.next;
       while (nextUrl && items.length < 100) {
         const nextResponse = await spotifyFetch(nextUrl);
         const nextData = await nextResponse.json();
@@ -913,6 +990,7 @@ skipBtn.onclick = () => {
 // ============ INIT ============
 console.log('🎵 Blindtest game loaded!');
 console.log('📋 Your redirect URI is:', REDIRECT_URI);
+console.log('📋 Required scopes:', REQUIRED_SCOPES.join(', '));
 </script>
 </body>
 </html>
