@@ -311,7 +311,7 @@ function extractPlaylistId(url){
 async function fetchPlaylistTracks(playlistId){
   const headers = {Authorization: 'Bearer '+accessToken};
   let items = [];
-  let url = 'https://api.spotify.com/v1/playlists/'+playlistId+'/tracks?limit=50&fields=items(track(id,uri,name,artists(name),preview_url,duration_ms)),next';
+  let url = 'https://api.spotify.com/v1/playlists/'+playlistId+'/items?limit=50&fields=items(track(id,uri,name,artists(name),preview_url,duration_ms)),next';
   while(url && items.length < 100){
     const res = await fetch(url, {headers});
     if(!res.ok) throw new Error('could not load playlist — is it public, or does the host have access?');
