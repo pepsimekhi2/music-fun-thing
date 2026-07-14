@@ -141,6 +141,15 @@
     margin-top:1.25rem;
   }
 </style>
+<script>
+  window.__sdkReadyQueue = [];
+  window.onSpotifyWebPlaybackSDKReady = function(){
+    window.__spotifySDKLoaded = true;
+    window.__sdkReadyQueue.forEach(fn => fn());
+    window.__sdkReadyQueue = [];
+  };
+</script>
+<script src="https://sdk.scdn.co/spotify-player.js"></script>
 </head>
 <body>
 <div class="stage">
@@ -251,6 +260,10 @@ let sdkReady = false;
 
 function initSdkPlayer(){
   if(!accessToken || sdkPlayer) return;
+  if(!window.__spotifySDKLoaded){
+    window.__sdkReadyQueue.push(initSdkPlayer);
+    return;
+  }
   sdkPlayer = new Spotify.Player({
     name: 'Blindtest party game',
     getOAuthToken: cb => cb(accessToken),
@@ -323,8 +336,6 @@ let clipSeconds = 1;
 let currentTrack = null;
 let usedIndexes = new Set();
 let audioEl = new Audio();
-
-window.onSpotifyWebPlaybackSDKReady = () => { initSdkPlayer(); };
 
 function pickTrack(){
   if(playlistTracks.length === 0) return null;
@@ -488,6 +499,5 @@ skipBtn.onclick = () => {
   setTimeout(advance, 1000);
 };
 </script>
-<script src="https://sdk.scdn.co/spotify-player.js"></script>
 </body>
 </html>
